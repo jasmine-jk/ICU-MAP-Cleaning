@@ -1454,7 +1454,7 @@ bp.no.gaps <- bp.original %>%
   select(subject_id, DateTime)
 ```
 
-b) Add minute column and insert any missing timestamps
+#b) Add minute column and insert any missing timestamps
 ```{r}
 bp.original.pad <- bp.original %>%
   group_by(subject_id) %>%
@@ -1462,7 +1462,7 @@ bp.original.pad <- bp.original %>%
   dplyr::mutate(minute = row_number()-1) 
 ```
 
-4) Run algorithm
+#4) Run algorithm
 ```{r}
 #run algorithm
 bp.algorithm <-  clean.iobp.icu(bp.original.pad, 30, 200, 1.3)
@@ -1471,7 +1471,7 @@ bp.algorithm <-  clean.iobp.icu(bp.original.pad, 30, 200, 1.3)
 bp.algorithm.final <- inner_join(bp.algorithm, bp.no.gaps, by = c("subject_id", "DateTime"))
 ```
 
-5) Plot original and clean bp traces ##FIX GAPS IN TRACE
+#5) Plot original and clean bp traces
 ```{r}
 subject.list <- unique(bp.original$subject_id)
 
