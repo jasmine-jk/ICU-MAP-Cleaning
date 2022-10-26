@@ -26,7 +26,8 @@ library(dplyr)
 library(padr)
 ```
 
-#1) Run Du et al 'clean.iobp' function. Added 'thresh' argument to function in order to modify parameters
+#1) Run Du et al 'clean.iobp' function (Du CH, Glick D, Tung A: Error-checking intraoperative arterial line blood pressures. J Clin Monit Comput 2019; 33:407–412). Added 'thresh' argument to function in order to modify parameters.
+
 ```{r}
 ########################################################################################################
 #Title: Error-Checking Intraoperative Arterial Line Blood Pressures		
