@@ -1,0 +1,1493 @@
+---
+title: "MAP_Cleaning_Algorithm_Github"
+author: "Jasmine Khan, jasmine.khan@queensu.ca"
+date: "25/10/2022"
+output: word_document
+editor_options: 
+  chunk_output_type: console
+---
+
+*Table of Contents:*
+
+1) Run Du et al 'clean.iobp' function
+1) Run Khan et al 'clean.iobp' function
+3) Load data + format
+4) Run algorithm + remove gaps
+5) Plot MAP traces
+
+```{r}
+#set working directory 
+setwd()
+
+#libraries
+library(data.table)
+library(tidyverse)
+library(dplyr)
+library(padr)
+```
+
+#1) Run Du et al 'clean.iobp' function. Added 'thresh' argument to function in order to modify parameters
+```{r}
+########################################################################################################
+#Title: Error-Checking Intraoperative Arterial Line Blood Pressures		
+#Journal: Journal of Clinical Monitoring and Computing		
+#Authors: Charles H Du, Avery Tung, David Glick		
+#Affiliation: University of Chicago Pritzker School of Medicine		
+#Contact: cdu@uchicago.edu		
+########################################################################################################
+
+#using simulated data, infer the start and end points of the true readings and trim.  Filter out blips.
+#takes dataframe bp.trace which has columns minute, sys.trace, dias.trace, MAP.trace
+clean.iobp = function(bp.trace, thresh)
+{
+  #trim leading and tailing NA
+  index = which(!is.na(bp.trace$sys.trace) & !is.na(bp.trace$dias.trace) & !is.na(bp.trace$MAP.trace))
+  bp.trace = bp.trace[index[1]:index[length(index)],]
+  
+  if(nrow(bp.trace) < 3)
+  {
+    print("Aborted: <3 minutes of readings") 
+    return(NULL)
+  }
+  
+  #delta is maximum systolic bp change per minute to be considered normal, without artifact or spike
+  #try computing a local delta, because at start and end of surgery bp variation is much larger and we 
+  #don't want to truncate real peaks
+  delta.sys = 8*thresh #original = 8
+  delta.dias = 5*thresh #original = 5
+  delta.MAP = 6*thresh #original = 6
+  SUPPRESS = 3
+  
+  #infer start as first point which is in physiologic window and holds steady over two minutes
+  physiologic = (bp.trace$sys.trace < 260) & (bp.trace$dias.trace < 140) & (bp.trace$sys.trace > 40) & 
+                  (bp.trace$dias.trace > 20) & ((bp.trace$sys.trace - bp.trace$dias.trace) > 15)
+  
+  lshift1s = c(bp.trace$sys.trace[2:nrow(bp.trace)], 0)
+  lshift2s = c(bp.trace$sys.trace[3:nrow(bp.trace)], 0, 0)
+  lshift1d = c(bp.trace$dias.trace[2:nrow(bp.trace)], 0)
+  lshift2d = c(bp.trace$dias.trace[3:nrow(bp.trace)], 0, 0)
+  lshift1m = c(bp.trace$MAP.trace[2:nrow(bp.trace)], 0)
+  lshift2m = c(bp.trace$MAP.trace[3:nrow(bp.trace)], 0, 0)
+  
+  #want any two of three (systolic, diastolic, MAP) to hold steady over two minutes, to be more forgiving of errors
+  #start and one of next two readings must be physiologic
+  index = which(physiologic & (c(physiologic[2:length(physiologic)], T) | c(physiologic[3:length(physiologic)], T, T)) &
+                (((abs(lshift1s - bp.trace$sys.trace) <= 2 * delta.sys | abs(lshift2s - bp.trace$sys.trace) <= 2 * sqrt(2)* delta.sys)
+                & (abs(lshift1d - bp.trace$dias.trace) <= 2 * delta.dias | abs(lshift2d - bp.trace$dias.trace) <= 2 * sqrt(2)* delta.dias))
+                | ((abs(lshift1s - bp.trace$sys.trace) <= 2 * delta.sys | abs(lshift2s - bp.trace$sys.trace) <= 2 * sqrt(2)* delta.sys)
+                & (abs(lshift1m - bp.trace$MAP.trace) <= 2 * delta.MAP | abs(lshift2m - bp.trace$MAP.trace) <= 2 * sqrt(2)* delta.MAP))
+                | ((abs(lshift1d - bp.trace$dias.trace) <= 2 * delta.dias | abs(lshift2d - bp.trace$dias.trace) <= 2 * sqrt(2)* delta.dias)
+                & (abs(lshift1m - bp.trace$MAP.trace) <= 2 * delta.MAP | abs(lshift2m - bp.trace$MAP.trace) <= 2 * sqrt(2)* delta.MAP))))
+  inferred.start = index[1]
+  
+  if(is.na(inferred.start))
+  {
+    print("Aborted: all readings look artifactual")
+    return(NULL)
+  }
+  
+  #infer end as last point which is in physiologic window and holds steady over two minutes
+  rshift1s = c(0, bp.trace$sys.trace[1:(nrow(bp.trace) - 1)])
+  rshift2s = c(0, 0, bp.trace$sys.trace[1:(nrow(bp.trace) - 2)])
+  rshift1d = c(0, bp.trace$dias.trace[1:(nrow(bp.trace) - 1)])
+  rshift2d = c(0, 0, bp.trace$dias.trace[1:(nrow(bp.trace) - 2)])
+  rshift1m = c(0, bp.trace$MAP.trace[1:(nrow(bp.trace) - 1)])
+  rshift2m = c(0, 0, bp.trace$MAP.trace[1:(nrow(bp.trace) - 2)])
+  
+  index = which(physiologic & (c(T, physiologic[1:(length(physiologic)-1)]) | c(T, T, physiologic[1:(length(physiologic)-2)])) &
+                (((abs(rshift1s - bp.trace$sys.trace) <= 2 * delta.sys | abs(rshift2s - bp.trace$sys.trace) <= 2 * sqrt(2)* delta.sys)
+                & (abs(rshift1d - bp.trace$dias.trace) <= 2 * delta.dias | abs(rshift2d - bp.trace$dias.trace) <= 2 * sqrt(2)* delta.dias))
+                | ((abs(rshift1s - bp.trace$sys.trace) <= 2 * delta.sys | abs(rshift2s - bp.trace$sys.trace) <= 2 * sqrt(2)* delta.sys)
+                & (abs(rshift1m - bp.trace$MAP.trace) <= 2 * delta.MAP | abs(rshift2m - bp.trace$MAP.trace) <= 2 * sqrt(2)* delta.MAP))
+                | ((abs(rshift1d - bp.trace$dias.trace) <= 2 * delta.dias | abs(rshift2d - bp.trace$dias.trace) <= 2 * sqrt(2)* delta.dias)
+                & (abs(rshift1m - bp.trace$MAP.trace) <= 2 * delta.MAP | abs(rshift2m - bp.trace$MAP.trace) <= 2 * sqrt(2)* delta.MAP))))
+  inferred.end = index[length(index)]
+  
+  if(length(inferred.end) == 0)
+  {
+    print("Aborted: all readings look artifactual2")
+    return(NULL)
+  }
+  
+  bp.trace.clean = bp.trace[inferred.start:inferred.end,]
+  
+  #get average spacing of MAP between systolic and diastolic.  Use this for interpolation of endpoints where linear interpolation is impossible.
+  spacings = (bp.trace.clean$MAP.trace - bp.trace.clean$dias.trace) / (bp.trace.clean$sys.trace - bp.trace.clean$dias.trace)
+  spacings = spacings[which(spacings > 0 & spacings < 1)]
+  spacing = mean(spacings, na.rm = T)
+  
+  #filter out blips.  Detect by checking if flanking points are both greater or both smaller, and close to one another.
+  #keep track of true peaks (in terms of minutes to solve issues with shifting indices).  
+  #When a true peak is detected, compute how many fold of delta it is.  Prevent smoothing in other corresponding traces
+  #of changes with comparable fold.
+  true.peaks.pos = rep(0, nrow(bp.trace.clean) - 1)
+  names(true.peaks.pos) = paste(bp.trace.clean$minute[1:(nrow(bp.trace.clean) - 1)], bp.trace.clean$minute[2:nrow(bp.trace.clean)], sep = "-")
+  true.peaks.neg = rep(0, nrow(bp.trace.clean) - 1)
+  names(true.peaks.neg) = paste(bp.trace.clean$minute[1:(nrow(bp.trace.clean) - 1)], bp.trace.clean$minute[2:nrow(bp.trace.clean)], sep = "-")
+    
+  #identify systolic points of rapid change.  Track by endpoints. Check if blip or peak.  If blip, Replace with NA.  
+  #If peak, store in true.peaks 
+  #index = which(abs(diff(bp.trace.clean$sys.trace)) > delta.sys)
+  #index = sort(unique(c(index, index+1)))
+  #also consider all points bordered by NA, but are not NA
+  #missing = which(is.na(bp.trace.clean$sys.trace))
+  #to.add = setdiff(c(missing - 1, missing + 1), c(0, nrow(bp.trace.clean)))
+  #index = sort(unique(c(index, to.add)))
+  #index = setdiff(index, missing)
+  index= 1:nrow(bp.trace.clean)
+  for(i in index)
+  {
+    if(is.na(bp.trace.clean$sys.trace[i]))
+    {
+      next
+    }
+    
+    #if first/last difference is > delta, use 3rd point to check if 1st or 2nd is faulty
+    if(i == 1)
+    {
+      right = 2
+      while(is.na(bp.trace.clean$sys.trace[i + right]))
+      {
+        right = right + 1
+      }
+      
+      if(abs(bp.trace.clean$sys.trace[1 + right] - bp.trace.clean$sys.trace[1]) <= 2 * sqrt(right) * delta.sys)
+      {
+        next
+      }else
+      {
+        bp.trace.clean$sys.trace[1] = bp.trace.clean$dias.trace[1] + (bp.trace.clean$MAP.trace[1] - bp.trace.clean$dias.trace[1]) / spacing
+        next
+      }
+    }
+    if(i == nrow(bp.trace.clean))
+    {
+      left = 2
+      while(is.na(bp.trace.clean$sys.trace[i - left]))
+      {
+        left = left + 1
+      }
+      
+      if(abs(bp.trace.clean$sys.trace[nrow(bp.trace.clean) - left] - bp.trace.clean$sys.trace[nrow(bp.trace.clean)]) 
+         <= 2 * sqrt(left) * delta.sys)
+      {
+        next
+      }else
+      {
+        bp.trace.clean$sys.trace[nrow(bp.trace.clean)] = bp.trace.clean$dias.trace[nrow(bp.trace.clean)] 
+          + (bp.trace.clean$MAP.trace[nrow(bp.trace.clean)] - bp.trace.clean$dias.trace[nrow(bp.trace.clean)]) / spacing
+        next
+      }
+    }
+    
+    #identify nearest non-NA neighbors
+    left = 1
+    while(is.na(bp.trace.clean$sys.trace[i - left]))
+    {
+      left = left + 1
+      if(i - left < 1)
+      {
+        break
+      }
+    }
+    if(i - left < 1)
+    {
+      next
+    }
+    
+    right = 1
+    while(is.na(bp.trace.clean$sys.trace[i + right]))
+    {
+      right = right + 1
+      if(i + right > nrow(bp.trace.clean))
+      {
+        break
+      }
+    }
+    if(i + right > nrow(bp.trace.clean))
+    {
+      next
+    }
+    
+    #test if reading is greater or less than both neighbors.  This would indicate blip.
+    if(abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) > sqrt(left) * delta.sys &
+       abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]) > sqrt(right) * delta.sys &
+       sign(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) 
+       == sign(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]))
+    {
+      bp.trace.clean$sys.trace[i] = NA
+      next
+    }
+    
+    #test if start of peak or valley.  If so, flag magnitude.
+    if(abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) <= sqrt(left) * delta.sys &
+       abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]) > sqrt(right) * delta.sys)
+    {
+      #escape the point to the left of a blip by looking one more point to the right
+      if(i + right < nrow(bp.trace.clean))
+      {
+        right2 = 1
+        while(is.na(bp.trace.clean$sys.trace[i + right + right2]))
+        {
+          right2 = right2 + 1
+          if(i + right + right2 > nrow(bp.trace.clean))
+          {
+            break
+          }
+        }
+        if(i + right + right2 > nrow(bp.trace.clean))
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$sys.trace[i + right] - bp.trace.clean$sys.trace[i + right + right2]) > sqrt(right2) * delta.sys & 
+           sign(bp.trace.clean$sys.trace[i + right] - bp.trace.clean$sys.trace[i + right + right2]) 
+           == -sign(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]))
+        {
+          next
+        }
+      }
+      
+      tp.right.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i], bp.trace.clean$minute[i+1], sep = "-"))
+      tp.right.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i+right-1], bp.trace.clean$minute[i+right], sep = "-"))
+      if(bp.trace.clean$sys.trace[i] < bp.trace.clean$sys.trace[i + right])
+      {
+        true.peaks.pos[tp.right.start:tp.right.end] = pmax(true.peaks.pos[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]) / sqrt(right) / delta.sys, na.rm = T)
+        next
+      }
+      
+      if(bp.trace.clean$sys.trace[i] > bp.trace.clean$sys.trace[i + right])
+      {
+        true.peaks.neg[tp.right.start:tp.right.end] = pmax(true.peaks.neg[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]) / sqrt(right) / delta.sys, na.rm = T)
+        next
+      }
+    }
+    #test if end of peak or valley.  If so, flag magnitude.
+    if(abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) > sqrt(left) * delta.sys &
+       abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]) <= sqrt(right) * delta.sys)
+    {
+      #escape the point to the right of a blip by looking one more point to the left
+      if(i - left > 1)
+      {
+        left2 = 1
+        while(is.na(bp.trace.clean$sys.trace[i - left - left2]))
+        {
+          left2 = left2 + 1
+          if(i - left - left2 < 1)
+          {
+            break
+          }
+        }
+        if(i - left - left2 < 1)
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$sys.trace[i - left] - bp.trace.clean$sys.trace[i - left - left2]) > sqrt(left2) * delta.sys & 
+           sign(bp.trace.clean$sys.trace[i - left] - bp.trace.clean$sys.trace[i - left - left2]) ==
+           -sign(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]))
+        {
+          next
+        }
+      }
+      
+      tp.left.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-1], bp.trace.clean$minute[i], sep = "-"))
+      tp.left.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-left], bp.trace.clean$minute[i-left+1], sep = "-"))
+      if(bp.trace.clean$sys.trace[i] > bp.trace.clean$sys.trace[i - left])
+      {
+        true.peaks.pos[tp.left.start:tp.left.end] = pmax(true.peaks.pos[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) / sqrt(left) / delta.sys, na.rm = T)
+        next
+      }
+      if(bp.trace.clean$sys.trace[i] < bp.trace.clean$sys.trace[i - left])
+      {
+        true.peaks.neg[tp.left.start:tp.left.end] = pmax(true.peaks.neg[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) / sqrt(left) / delta.sys, na.rm = T)
+        next
+      }
+    }
+    
+    #test if greater or less than both neighbors but subthreshold, then flag magnitude
+    if(sign(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) 
+       == sign(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]))
+    {
+      #escape the point to the right of a blip by looking one more point to the left
+      if(i - left > 1)
+      {
+        left2 = 1
+        while(is.na(bp.trace.clean$sys.trace[i - left - left2]))
+        {
+          left2 = left2 + 1
+          if(i - left - left2 < 1)
+          {
+            break
+          }
+        }
+        if(i - left - left2 < 1)
+        {
+          break
+        }
+        
+        if(abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) > sqrt(left) * delta.sys & 
+           abs(bp.trace.clean$sys.trace[i - left] - bp.trace.clean$sys.trace[i - left - left2]) > sqrt(left2) * delta.sys & 
+           sign(bp.trace.clean$sys.trace[i - left] - bp.trace.clean$sys.trace[i - left - left2]) ==
+           -sign(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]))
+        {
+          next
+        }
+      }
+      
+      #escape the point to the left of a blip by looking one more point to the right
+      if(i + right < nrow(bp.trace.clean))
+      {
+        right2 = 1
+        while(is.na(bp.trace.clean$sys.trace[i + right + right2]))
+        {
+          right2 = right2 + 1
+          if(i + right + right2 > nrow(bp.trace.clean))
+          {
+            break
+          }
+        }
+        if(i + right + right2 > nrow(bp.trace.clean))
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]) > sqrt(right) * delta.sys & 
+           abs(bp.trace.clean$sys.trace[i + right] - bp.trace.clean$sys.trace[i + right + right2]) > sqrt(right2) * delta.sys & 
+           sign(bp.trace.clean$sys.trace[i + right] - bp.trace.clean$sys.trace[i + right + right2]) 
+           == -sign(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]))
+        {
+          next
+        }
+      }
+      
+      tp.right.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i], bp.trace.clean$minute[i+1], sep = "-"))
+      tp.right.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i+right-1], bp.trace.clean$minute[i+right], sep = "-"))
+      tp.left.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-1], bp.trace.clean$minute[i], sep = "-"))
+      tp.left.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-left], bp.trace.clean$minute[i-left+1], sep = "-"))
+      
+      if(bp.trace.clean$sys.trace[i] > bp.trace.clean$sys.trace[i - left])
+      {
+        true.peaks.pos[tp.left.start:tp.left.end] = pmax(true.peaks.pos[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) / sqrt(left) / delta.sys, na.rm = T)
+        next
+      }
+      if(bp.trace.clean$sys.trace[i] < bp.trace.clean$sys.trace[i - left])
+      {
+        true.peaks.neg[tp.left.start:tp.left.end] = pmax(true.peaks.neg[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i - left]) / sqrt(left) / delta.sys, na.rm = T)
+        next
+      }
+      
+      if(bp.trace.clean$sys.trace[i] < bp.trace.clean$sys.trace[i + right])
+      {
+        true.peaks.pos[tp.right.start:tp.right.end] = pmax(true.peaks.pos[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]) / sqrt(right) / delta.sys, na.rm = T)
+        next
+      }
+      
+      if(bp.trace.clean$sys.trace[i] > bp.trace.clean$sys.trace[i + right])
+      {
+        true.peaks.neg[tp.right.start:tp.right.end] = pmax(true.peaks.neg[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$sys.trace[i] - bp.trace.clean$sys.trace[i + right]) / sqrt(right) / delta.sys, na.rm = T)
+        next
+      }
+      
+    }
+  }
+  
+  #repeat for diastolic
+  #index = which(abs(diff(bp.trace.clean$dias.trace)) > delta.dias)
+  #index = sort(unique(c(index, index+1)))
+  
+  #missing = which(is.na(bp.trace.clean$dias.trace))
+  #to.add = setdiff(c(missing - 1, missing + 1), c(0, nrow(bp.trace.clean)))
+  #index = sort(unique(c(index, to.add)))
+  #index = setdiff(index, missing)
+  index = 1:nrow(bp.trace.clean)
+  for(i in index)
+  {
+    if(is.na(bp.trace.clean$dias.trace[i]))
+    {
+      next
+    }
+    
+    #if first/last difference is > delta, use 3rd point to check if 1st or 2nd is faulty
+    if(i == 1)
+    {
+      right = 2
+      while(is.na(bp.trace.clean$dias.trace[i + right]))
+      {
+        right = right + 1
+      }
+      
+      if(abs(bp.trace.clean$dias.trace[1 + right] - bp.trace.clean$dias.trace[1]) <= 2 * sqrt(right) * delta.dias)
+      {
+        next
+      }else
+      {
+        bp.trace.clean$dias.trace[1] = bp.trace.clean$sys.trace[1] - (bp.trace.clean$sys.trace[1] - bp.trace.clean$MAP.trace[1]) / (1 - spacing)
+        next
+      }
+    }
+    if(i == nrow(bp.trace.clean))
+    {
+      left = 2
+      while(is.na(bp.trace.clean$dias.trace[i - left]))
+      {
+        left = left + 1
+      }
+      
+      if(abs(bp.trace.clean$dias.trace[nrow(bp.trace.clean) - left] - bp.trace.clean$dias.trace[nrow(bp.trace.clean)]) 
+         <= 2 * sqrt(left) * delta.dias)
+      {
+        next
+      }else
+      {
+        bp.trace.clean$dias.trace[nrow(bp.trace.clean)] = bp.trace.clean$sys.trace[nrow(bp.trace.clean)] 
+          - (bp.trace.clean$sys.trace[nrow(bp.trace.clean)] - bp.trace.clean$MAP.trace[nrow(bp.trace.clean)]) / (1 - spacing)
+        next
+      }
+    }
+    
+    #identify nearest non-NA neighbors
+    left = 1
+    while(is.na(bp.trace.clean$dias.trace[i - left]))
+    {
+      left = left + 1
+      if(i - left < 1)
+      {
+        break
+      }
+    }
+    if(i - left < 1)
+    {
+      next
+    }
+    
+    right = 1
+    while(is.na(bp.trace.clean$dias.trace[i + right]))
+    {
+      right = right + 1
+      if(i + right > nrow(bp.trace.clean))
+      {
+        break
+      }
+    }
+    if(i + right > nrow(bp.trace.clean))
+    {
+      next
+    }
+    
+    #test if reading is greater or less than both neighbors
+    if(abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) > sqrt(left) * delta.dias &
+       abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]) > sqrt(right) * delta.dias &
+       sign(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) 
+       == sign(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]))
+    {
+      bp.trace.clean$dias.trace[i] = NA
+      next
+    }
+    
+    #test if start of peak or valley.  If so, flag magnitude.
+    if(abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) <= sqrt(left) * delta.dias &
+       abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]) > sqrt(right) * delta.dias)
+    {
+      #escape the point to the left of a blip by looking one more point to the right
+      if(i + right < nrow(bp.trace.clean))
+      {
+        right2 = 1
+        while(is.na(bp.trace.clean$dias.trace[i + right + right2]))
+        {
+          right2 = right2 + 1
+          if(i + right + right2 > nrow(bp.trace.clean))
+          {
+            break
+          }
+        }
+        if(i + right + right2 > nrow(bp.trace.clean))
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$dias.trace[i + right] - bp.trace.clean$dias.trace[i + right + right2]) > sqrt(right2) * delta.dias & 
+           sign(bp.trace.clean$dias.trace[i + right] - bp.trace.clean$dias.trace[i + right + right2]) ==
+           -sign(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]))
+        {
+          next
+        }
+      }
+      
+      tp.right.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i], bp.trace.clean$minute[i+1], sep = "-"))
+      tp.right.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i+right-1], bp.trace.clean$minute[i+right], sep = "-"))
+      
+      if(bp.trace.clean$dias.trace[i] < bp.trace.clean$dias.trace[i + right])
+      {
+        true.peaks.pos[tp.right.start:tp.right.end] = pmax(true.peaks.pos[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]) / sqrt(right) / delta.dias, na.rm = T)
+      }
+      
+      if(bp.trace.clean$dias.trace[i] > bp.trace.clean$dias.trace[i + right])
+      {
+        true.peaks.neg[tp.right.start:tp.right.end] = pmax(true.peaks.neg[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]) / sqrt(right) / delta.dias, na.rm = T)
+      }
+      
+    }
+    
+    #test if end of peak or valley.  If so, flag magnitude.
+    if(abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) > sqrt(left) * delta.dias &
+       abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]) <= sqrt(right) * delta.dias)
+    {
+      #escape the point to the right of a blip by looking one more point to the left
+      if(i - left > 1)
+      {
+        left2 = 1
+        while(is.na(bp.trace.clean$dias.trace[i - left - left2]))
+        {
+          left2 = left2 + 1
+          if(i - left - left2 < 1)
+          {
+            break
+          }
+        }
+        if(i - left - left2 < 1)
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$dias.trace[i - left] - bp.trace.clean$dias.trace[i - left - left2]) > sqrt(left2) * delta.dias & 
+           sign(bp.trace.clean$dias.trace[i - left] - bp.trace.clean$dias.trace[i - left - left2]) ==
+           -sign(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]))
+        {
+          next
+        }
+      }
+      
+      tp.left.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-1], bp.trace.clean$minute[i], sep = "-"))
+      tp.left.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-left], bp.trace.clean$minute[i-left+1], sep = "-"))
+      
+      if(bp.trace.clean$dias.trace[i] > bp.trace.clean$dias.trace[i - left])
+      {
+        true.peaks.pos[tp.left.start:tp.left.end] = pmax(true.peaks.pos[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) / sqrt(left) / delta.dias, na.rm = T)
+      }
+      if(bp.trace.clean$dias.trace[i] < bp.trace.clean$dias.trace[i - left])
+      {
+        true.peaks.neg[tp.left.start:tp.left.end] = pmax(true.peaks.neg[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) / sqrt(left) / delta.dias, na.rm = T)
+      }
+      
+    }
+    
+    #test if greater or less than both neighbors but subthreshold, then flag magnitude
+    if(sign(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) 
+       == sign(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]))
+    {
+      #escape the point to the right of a blip by looking one more point to the left
+      if(i - left > 1)
+      {
+        left2 = 1
+        while(is.na(bp.trace.clean$dias.trace[i - left - left2]))
+        {
+          left2 = left2 + 1
+          if(i - left - left2 < 1)
+          {
+            break
+          }
+        }
+        if(i - left - left2 < 1)
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) > sqrt(left) * delta.dias & 
+           abs(bp.trace.clean$dias.trace[i - left] - bp.trace.clean$dias.trace[i - left - left2]) > sqrt(left2) * delta.dias & 
+           sign(bp.trace.clean$dias.trace[i - left] - bp.trace.clean$dias.trace[i - left - left2]) ==
+           -sign(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]))
+        {
+          next
+        }
+      }
+      
+      #escape the point to the left of a blip by looking one more point to the right
+      if(i + right < nrow(bp.trace.clean))
+      {
+        right2 = 1
+        while(is.na(bp.trace.clean$dias.trace[i + right + right2]))
+        {
+          right2 = right2 + 1
+          if(i + right + right2 > nrow(bp.trace.clean))
+          {
+            break
+          }
+        }
+        if(i + right + right2 > nrow(bp.trace.clean))
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]) > sqrt(right) * delta.dias & 
+           abs(bp.trace.clean$dias.trace[i + right] - bp.trace.clean$dias.trace[i + right + right2]) > sqrt(right2) * delta.dias & 
+           sign(bp.trace.clean$dias.trace[i + right] - bp.trace.clean$dias.trace[i + right + right2]) 
+           == -sign(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]))
+        {
+          next
+        }
+      }
+      
+      tp.right.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i], bp.trace.clean$minute[i+1], sep = "-"))
+      tp.right.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i+right-1], bp.trace.clean$minute[i+right], sep = "-"))
+      tp.left.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-1], bp.trace.clean$minute[i], sep = "-"))
+      tp.left.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-left], bp.trace.clean$minute[i-left+1], sep = "-"))
+      
+      if(bp.trace.clean$dias.trace[i] > bp.trace.clean$dias.trace[i - left])
+      {
+        true.peaks.pos[tp.left.start:tp.left.end] = pmax(true.peaks.pos[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) / sqrt(left) / delta.dias, na.rm = T)
+      }
+      if(bp.trace.clean$dias.trace[i] < bp.trace.clean$dias.trace[i - left])
+      {
+        true.peaks.neg[tp.left.start:tp.left.end] = pmax(true.peaks.neg[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i - left]) / sqrt(left) / delta.dias, na.rm = T)
+      }
+      
+      if(bp.trace.clean$dias.trace[i] < bp.trace.clean$dias.trace[i + right])
+      {
+        true.peaks.pos[tp.right.start:tp.right.end] = pmax(true.peaks.pos[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]) / sqrt(right) / delta.dias, na.rm = T)
+      }
+      
+      if(bp.trace.clean$dias.trace[i] > bp.trace.clean$dias.trace[i + right])
+      {
+        true.peaks.neg[tp.right.start:tp.right.end] = pmax(true.peaks.neg[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$dias.trace[i] - bp.trace.clean$dias.trace[i + right]) / sqrt(right) / delta.dias, na.rm = T)
+      }
+      
+    }
+  }
+  
+  #repeat for MAP
+  #index = which(abs(diff(bp.trace.clean$MAP.trace)) > delta.MAP)
+  #index = sort(unique(c(index, index+1)))
+  
+  #missing = which(is.na(bp.trace.clean$MAP.trace))
+  #to.add = setdiff(c(missing - 1, missing + 1), c(0, nrow(bp.trace.clean)))
+  #index = sort(unique(c(index, to.add)))
+  #index = setdiff(index, missing)
+  index = 1:nrow(bp.trace.clean)
+  for(i in index)
+  {
+    if(is.na(bp.trace.clean$MAP.trace[i]))
+    {
+      next
+    }
+    
+    #if first/last difference is > delta, use 3rd point to check if 1st or 2nd is faulty
+    if(i == 1)
+    {
+      right = 2
+      while(is.na(bp.trace.clean$MAP.trace[i + right]))
+      {
+        right = right + 1
+      }
+      
+      if(abs(bp.trace.clean$MAP.trace[1 + right] - bp.trace.clean$MAP.trace[1]) <= 2 * sqrt(right) * delta.MAP)
+      {
+        next
+      }else
+      {
+        bp.trace.clean$MAP.trace[1] = bp.trace.clean$dias.trace[1] + (bp.trace.clean$sys.trace[1] - bp.trace.clean$dias.trace[1]) * spacing
+        next
+      }
+    }
+    if(i == nrow(bp.trace.clean))
+    {
+      left = 2
+      while(is.na(bp.trace.clean$MAP.trace[i - left]))
+      {
+        left = left + 1
+      }
+      
+      if(abs(bp.trace.clean$MAP.trace[nrow(bp.trace.clean) - left] - bp.trace.clean$MAP.trace[nrow(bp.trace.clean)]) <= 
+         2 * sqrt(left) * delta.MAP)
+      {
+        next
+      }else
+      {
+        bp.trace.clean$MAP.trace[nrow(bp.trace.clean)] = bp.trace.clean$dias.trace[nrow(bp.trace.clean)] 
+          + (bp.trace.clean$sys.trace[nrow(bp.trace.clean)] - bp.trace.clean$dias.trace[nrow(bp.trace.clean)]) * spacing
+        next
+      }
+    }
+    
+    #identify nearest non-NA neighbors
+    left = 1
+    while(is.na(bp.trace.clean$MAP.trace[i - left]))
+    {
+      left = left + 1
+      if(i - left < 1)
+      {
+        break
+      }
+    }
+    if(i - left < 1)
+    {
+      next
+    }
+    
+    right = 1
+    while(is.na(bp.trace.clean$MAP.trace[i + right]))
+    {
+      right = right + 1
+      if(i + right > nrow(bp.trace.clean))
+      {
+        break
+      }
+    }
+    if(i + right > nrow(bp.trace.clean))
+    {
+      next
+    }
+    
+    #test if reading is greater or less than both neighbors
+    if(abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) > sqrt(left) * delta.MAP &
+       abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]) > sqrt(right) * delta.MAP &
+       sign(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) == sign(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]))
+    {
+      bp.trace.clean$MAP.trace[i] = NA
+      next
+    }
+    
+    #test if start of peak or valley.  If so, flag magnitude.
+    if(abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) <= sqrt(left) * delta.MAP &
+       abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]) > sqrt(right) * delta.MAP)
+    {
+      #escape the point to the left of a blip by looking one more point to the right
+      if(i + right < nrow(bp.trace.clean))
+      {
+        right2 = 1
+        while(is.na(bp.trace.clean$MAP.trace[i + right + right2]))
+        {
+          right2 = right2 + 1
+          if(i + right + right2 > nrow(bp.trace.clean))
+          {
+            break
+          }
+        }
+        if(i + right + right2 > nrow(bp.trace.clean))
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$MAP.trace[i + right] - bp.trace.clean$MAP.trace[i + right + right2]) > sqrt(right2) * delta.MAP & 
+           sign(bp.trace.clean$MAP.trace[i + right] - bp.trace.clean$MAP.trace[i + right + right2]) ==
+           -sign(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]))
+        {
+          next
+        }
+      }
+      
+      tp.right.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i], bp.trace.clean$minute[i+1], sep = "-"))
+      tp.right.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i+right-1], bp.trace.clean$minute[i+right], sep = "-"))
+      
+      if(bp.trace.clean$MAP.trace[i] < bp.trace.clean$MAP.trace[i + right])
+      {
+        true.peaks.pos[tp.right.start:tp.right.end] = pmax(true.peaks.pos[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]) / sqrt(right) / delta.MAP, na.rm = T)
+      }
+      
+      if(bp.trace.clean$MAP.trace[i] > bp.trace.clean$MAP.trace[i + right])
+      {
+        true.peaks.neg[tp.right.start:tp.right.end] = pmax(true.peaks.neg[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]) / sqrt(right) / delta.MAP, na.rm = T)
+      }
+      
+    }
+    #test if end of peak or valley.  If so, flag magnitude.
+    if(abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) > sqrt(left) * delta.MAP &
+       abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]) <= sqrt(right) * delta.MAP)
+    {
+      #escape the point to the right of a blip by looking one more point to the left
+      if(i - left > 1)
+      {
+        left2 = 1
+        while(is.na(bp.trace.clean$MAP.trace[i - left - left2]))
+        {
+          left2 = left2 + 1
+          if(i - left - left2 < 1)
+          {
+            break
+          }
+        }
+        if(i - left - left2 < 1)
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$MAP.trace[i - left] - bp.trace.clean$MAP.trace[i - left - left2]) > sqrt(left2) * delta.MAP & 
+           sign(bp.trace.clean$MAP.trace[i - left] - bp.trace.clean$MAP.trace[i - left - left2]) ==
+           -sign(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]))
+        {
+          next
+        }
+      }
+      
+      tp.left.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-1], bp.trace.clean$minute[i], sep = "-"))
+      tp.left.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-left], bp.trace.clean$minute[i-left+1], sep = "-"))
+      
+      if(bp.trace.clean$MAP.trace[i] > bp.trace.clean$MAP.trace[i - left])
+      {
+        true.peaks.pos[tp.left.start:tp.left.end] = pmax(true.peaks.pos[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) / sqrt(left) / delta.MAP, na.rm = T)
+      }
+      if(bp.trace.clean$MAP.trace[i] < bp.trace.clean$MAP.trace[i - left])
+      {
+        true.peaks.neg[tp.left.start:tp.left.end] = pmax(true.peaks.neg[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) / sqrt(left) / delta.MAP, na.rm = T)
+      }
+      
+    }
+    
+    #test if greater or less than both neighbors but subthreshold, then flag magnitude
+    if(sign(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) 
+       == sign(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]))
+    {
+      #escape the point to the right of a blip by looking one more point to the left
+      if(i - left > 1)
+      {
+        left2 = 1
+        while(is.na(bp.trace.clean$MAP.trace[i - left - left2]))
+        {
+          left2 = left2 + 1
+          if(i - left - left2 < 1)
+          {
+            break
+          }
+        }
+        if(i - left - left2 < 1)
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) > sqrt(left) * delta.MAP & 
+           abs(bp.trace.clean$MAP.trace[i - left] - bp.trace.clean$MAP.trace[i - left - left2]) > sqrt(left2) * delta.MAP & 
+           sign(bp.trace.clean$MAP.trace[i - left] - bp.trace.clean$MAP.trace[i - left - left2]) ==
+           -sign(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]))
+        {
+          next
+        }
+      }
+      
+      #escape the point to the left of a blip by looking one more point to the right
+      if(i + right < nrow(bp.trace.clean))
+      {
+        right2 = 1
+        while(is.na(bp.trace.clean$MAP.trace[i + right + right2]))
+        {
+          right2 = right2 + 1
+          if(i + right + right2 > nrow(bp.trace.clean))
+          {
+            break
+          }
+        }
+        if(i + right + right2 > nrow(bp.trace.clean))
+        {
+          next
+        }
+        
+        if(abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]) > sqrt(right) * delta.MAP & 
+           abs(bp.trace.clean$MAP.trace[i + right] - bp.trace.clean$MAP.trace[i + right + right2]) > sqrt(right2) * delta.MAP & 
+           sign(bp.trace.clean$MAP.trace[i + right] - bp.trace.clean$MAP.trace[i + right + right2]) 
+           == -sign(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]))
+        {
+          next
+        }
+      }
+      
+      tp.right.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i], bp.trace.clean$minute[i+1], sep = "-"))
+      tp.right.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i+right-1], bp.trace.clean$minute[i+right], sep = "-"))
+      tp.left.start = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-1], bp.trace.clean$minute[i], sep = "-"))
+      tp.left.end = which(names(true.peaks.pos) == paste(bp.trace.clean$minute[i-left], bp.trace.clean$minute[i-left+1], sep = "-"))
+      
+      if(bp.trace.clean$MAP.trace[i] > bp.trace.clean$MAP.trace[i - left])
+      {
+        true.peaks.pos[tp.left.start:tp.left.end] = pmax(true.peaks.pos[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) / sqrt(left) / delta.MAP, na.rm = T)
+      }
+      if(bp.trace.clean$MAP.trace[i] < bp.trace.clean$MAP.trace[i - left])
+      {
+        true.peaks.neg[tp.left.start:tp.left.end] = pmax(true.peaks.neg[tp.left.start:tp.left.end],
+                                                         abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i - left]) / sqrt(left) / delta.MAP, na.rm = T)
+      }
+      
+      if(bp.trace.clean$MAP.trace[i] < bp.trace.clean$MAP.trace[i + right])
+      {
+        true.peaks.pos[tp.right.start:tp.right.end] = pmax(true.peaks.pos[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]) / sqrt(right) / delta.MAP, na.rm = T)
+      }
+      
+      if(bp.trace.clean$MAP.trace[i] > bp.trace.clean$MAP.trace[i + right])
+      {
+        true.peaks.neg[tp.right.start:tp.right.end] = pmax(true.peaks.neg[tp.right.start:tp.right.end],
+                                                           abs(bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i + right]) / sqrt(right) / delta.MAP, na.rm = T)
+      }
+      
+      
+    }
+  }
+  
+  
+  #fill back in original values for each trace if the fold change relative to delta is less than SUPPRESS * true.peaks
+  index = which(is.na(bp.trace.clean$sys.trace))
+  for(i in index)
+  {
+    #find j, corresponding index in bp.trace
+    time = bp.trace.clean$minute[i]
+    j = which(bp.trace$minute == time)
+    
+    #nothing to do if originally NA
+    if(is.na(bp.trace$sys.trace[j]))
+    {
+      next
+    }
+    
+    #handle possible flanking NAs
+    left = 1
+    while(is.na(bp.trace$sys.trace[j - left]))
+    {
+      left = left + 1
+    }
+    
+    right = 1
+    while(is.na(bp.trace$sys.trace[j + right]))
+    {
+      right = right + 1
+    }
+    
+    #check rates of change on both sides, add originally value back if suppressed by a larger true peak in another trace.
+    if(bp.trace$sys.trace[j] > bp.trace$sys.trace[j - left])
+    {
+      if(abs(bp.trace$sys.trace[j] - bp.trace$sys.trace[j - left]) / delta.sys / sqrt(left) < SUPPRESS * true.peaks.pos[paste(time - 1, time, sep = "-")])
+      {
+        bp.trace.clean$sys.trace[i] = bp.trace$sys.trace[j]
+      }
+    }
+    if(bp.trace$sys.trace[j] < bp.trace$sys.trace[j - left])
+    {
+      if(abs(bp.trace$sys.trace[j] - bp.trace$sys.trace[j - left]) / delta.sys / sqrt(left) < SUPPRESS * true.peaks.neg[paste(time - 1, time, sep = "-")])
+      {
+        bp.trace.clean$sys.trace[i] = bp.trace$sys.trace[j]
+      }
+    }
+    if(bp.trace$sys.trace[j] < bp.trace$sys.trace[j + right])
+    {
+      if(abs(bp.trace$sys.trace[j] - bp.trace$sys.trace[j + right]) / delta.sys / sqrt(right) < SUPPRESS * true.peaks.pos[paste(time, time + 1, sep = "-")])
+      {
+        bp.trace.clean$sys.trace[i] = bp.trace$sys.trace[j]
+      }
+    }
+    if(bp.trace$sys.trace[j] > bp.trace$sys.trace[j + right])
+    {
+      if(abs(bp.trace$sys.trace[j] - bp.trace$sys.trace[j + right]) / delta.sys / sqrt(right) < SUPPRESS * true.peaks.neg[paste(time, time + 1, sep = "-")])
+      {
+        bp.trace.clean$sys.trace[i] = bp.trace$sys.trace[j]
+      }
+    }
+    
+  }
+  
+  #repeat for diastolic
+  index = which(is.na(bp.trace.clean$dias.trace))
+  for(i in index)
+  {
+    #find j, corresponding index in bp.trace
+    time = bp.trace.clean$minute[i]
+    j = which(bp.trace$minute == time)
+    
+    #nothing to do if originally NA
+    if(is.na(bp.trace$dias.trace[j]))
+    {
+      next
+    }
+    
+    #handle possible flanking NAs
+    left = 1
+    while(is.na(bp.trace$dias.trace[j - left]))
+    {
+      left = left + 1
+    }
+    
+    right = 1
+    while(is.na(bp.trace$dias.trace[j + right]))
+    {
+      right = right + 1
+    }
+    
+    #check rates of change on both sides, add originally value back if suppressed by a larger true peak in another trace.
+    if(bp.trace$dias.trace[j] > bp.trace$dias.trace[j - left])
+    {
+      if(abs(bp.trace$dias.trace[j] - bp.trace$dias.trace[j - left]) / delta.dias / sqrt(left) < SUPPRESS * true.peaks.pos[paste(time - 1, time, sep = "-")])
+      {
+        bp.trace.clean$dias.trace[i] = bp.trace$dias.trace[j]
+      }
+    }
+    if(bp.trace$dias.trace[j] < bp.trace$dias.trace[j - left])
+    {
+      if(abs(bp.trace$dias.trace[j] - bp.trace$dias.trace[j - left]) / delta.dias / sqrt(left) < SUPPRESS * true.peaks.neg[paste(time - 1, time, sep = "-")])
+      {
+        bp.trace.clean$dias.trace[i] = bp.trace$dias.trace[j]
+      }
+    }
+    if(bp.trace$dias.trace[j] < bp.trace$dias.trace[j + right])
+    {
+      if(abs(bp.trace$dias.trace[j] - bp.trace$dias.trace[j + right]) / delta.dias / sqrt(right) < SUPPRESS * true.peaks.pos[paste(time, time + 1, sep = "-")])
+      {
+        bp.trace.clean$dias.trace[i] = bp.trace$dias.trace[j]
+      }
+    }
+    if(bp.trace$dias.trace[j] > bp.trace$dias.trace[j + right])
+    {
+      if(abs(bp.trace$dias.trace[j] - bp.trace$dias.trace[j + right]) / delta.dias / sqrt(right) < SUPPRESS * true.peaks.neg[paste(time, time + 1, sep = "-")])
+      {
+        bp.trace.clean$dias.trace[i] = bp.trace$dias.trace[j]
+      }
+    }
+    
+  }
+  
+  #repeat for MAP
+  index = which(is.na(bp.trace.clean$MAP.trace))
+  for(i in index)
+  {
+    #find j, corresponding index in bp.trace
+    time = bp.trace.clean$minute[i]
+    j = which(bp.trace$minute == time)
+    
+    #nothing to do if originally NA
+    if(is.na(bp.trace$MAP.trace[j]))
+    {
+      next
+    }
+    
+    #handle possible flanking NAs
+    left = 1
+    while(is.na(bp.trace$MAP.trace[j - left]))
+    {
+      left = left + 1
+    }
+    
+    right = 1
+    while(is.na(bp.trace$MAP.trace[j + right]))
+    {
+      right = right + 1
+    }
+    
+    #check rates of change on both sides, add originally value back if suppressed by a larger true peak in another trace.
+    if(bp.trace$MAP.trace[j] > bp.trace$MAP.trace[j - left])
+    {
+      if(abs(bp.trace$MAP.trace[j] - bp.trace$MAP.trace[j - left]) / delta.MAP / sqrt(left) < SUPPRESS * true.peaks.pos[paste(time - 1, time, sep = "-")])
+      {
+        bp.trace.clean$MAP.trace[i] = bp.trace$MAP.trace[j]
+      }
+    }
+    if(bp.trace$MAP.trace[j] < bp.trace$MAP.trace[j - left])
+    {
+      if(abs(bp.trace$MAP.trace[j] - bp.trace$MAP.trace[j - left]) / delta.MAP / sqrt(left) < SUPPRESS * true.peaks.neg[paste(time - 1, time, sep = "-")])
+      {
+        bp.trace.clean$MAP.trace[i] = bp.trace$MAP.trace[j]
+      }
+    }
+    if(bp.trace$MAP.trace[j] < bp.trace$MAP.trace[j + right])
+    {
+      if(abs(bp.trace$MAP.trace[j] - bp.trace$MAP.trace[j + right]) / delta.MAP / sqrt(right) < SUPPRESS * true.peaks.pos[paste(time, time + 1, sep = "-")])
+      {
+        bp.trace.clean$MAP.trace[i] = bp.trace$MAP.trace[j]
+      }
+    }
+    if(bp.trace$MAP.trace[j] > bp.trace$MAP.trace[j + right])
+    {
+      if(abs(bp.trace$MAP.trace[j] - bp.trace$MAP.trace[j + right]) / delta.MAP / sqrt(right) < SUPPRESS * true.peaks.neg[paste(time, time + 1, sep = "-")])
+      {
+        bp.trace.clean$MAP.trace[i] = bp.trace$MAP.trace[j]
+      }
+    }
+    
+  }
+  
+  
+  #fill in missing values with linear interpolation
+  index = which(is.na(bp.trace.clean$sys.trace))
+  for(i in index)
+  {
+    j = i+1
+    count = 1
+    while(j %in% index)
+    {
+      index = setdiff(index, j)
+      count = count + 1
+      j = j + 1
+    }
+    bp.trace.clean$sys.trace[i:(i + count - 1)] = rep(bp.trace.clean$sys.trace[i-1], count) + 1:count * 
+      (bp.trace.clean$sys.trace[i + count] - bp.trace.clean$sys.trace[i - 1]) / (count + 1)
+  }
+  #repeat for diastolic
+  index = which(is.na(bp.trace.clean$dias.trace))
+  for(i in index)
+  {
+    j = i+1
+    count = 1
+    while(j %in% index)
+    {
+      index = setdiff(index, j)
+      count = count + 1
+      j = j + 1
+    }
+    bp.trace.clean$dias.trace[i:(i + count - 1)] = rep(bp.trace.clean$dias.trace[i-1], count) + 1:count * 
+      (bp.trace.clean$dias.trace[i + count] - bp.trace.clean$dias.trace[i - 1]) / (count + 1)
+  }
+  #repeat for MAP
+  index = which(is.na(bp.trace.clean$MAP.trace))
+  for(i in index)
+  {
+    j = i+1
+    count = 1
+    while(j %in% index)
+    {
+      index = setdiff(index, j)
+      count = count + 1
+      j = j + 1
+    }
+    bp.trace.clean$MAP.trace[i:(i + count - 1)] = rep(bp.trace.clean$MAP.trace[i-1], count) + 1:count * 
+      (bp.trace.clean$MAP.trace[i + count] - bp.trace.clean$MAP.trace[i - 1]) / (count + 1)
+  }
+  
+  #cross reference systolic, diastolic, and MAP for consistency
+  #first fetch instances where MAP is too high, or sys or dias is too low
+  index = which(bp.trace.clean$MAP.trace > bp.trace.clean$dias.trace + (1 - 2/3 * (1-spacing)) * (bp.trace.clean$sys.trace - bp.trace.clean$dias.trace))
+  z = nrow(bp.trace.clean)
+  for(i in index)
+  {
+    #if at endpoints, identify which two of systolic, diastolic, MAP are correct and use them to interpolate the third
+    if(i == 1)
+    {
+      if(max(c(bp.trace.clean$sys.trace[2] - bp.trace.clean$sys.trace[1], bp.trace.clean$dias.trace[2] - bp.trace.clean$dias.trace[1], 
+               bp.trace.clean$MAP.trace[1] - bp.trace.clean$MAP.trace[2])) == bp.trace.clean$sys.trace[2] - bp.trace.clean$sys.trace[1])
+      {
+        bp.trace.clean$sys.trace[1] = bp.trace.clean$dias.trace[1] + (bp.trace.clean$MAP.trace[1] - bp.trace.clean$dias.trace[1]) / spacing
+      }
+      if(max(c(bp.trace.clean$sys.trace[2] - bp.trace.clean$sys.trace[1], bp.trace.clean$dias.trace[2] - bp.trace.clean$dias.trace[1], 
+               bp.trace.clean$MAP.trace[1] - bp.trace.clean$MAP.trace[2])) == bp.trace.clean$dias.trace[2] - bp.trace.clean$dias.trace[1])
+      {
+        bp.trace.clean$dias.trace[1] = bp.trace.clean$sys.trace[1] - (bp.trace.clean$sys.trace[1] - bp.trace.clean$MAP.trace[1]) / (1 - spacing)
+      }
+      if(max(c(bp.trace.clean$sys.trace[2] - bp.trace.clean$sys.trace[1], bp.trace.clean$dias.trace[2] - bp.trace.clean$dias.trace[1], 
+               bp.trace.clean$MAP.trace[1] - bp.trace.clean$MAP.trace[2])) == bp.trace.clean$MAP.trace[1] - bp.trace.clean$MAP.trace[2])
+      {
+        bp.trace.clean$MAP.trace[1] = bp.trace.clean$dias.trace[1] + (bp.trace.clean$sys.trace[1] - bp.trace.clean$dias.trace[1]) * spacing
+      }
+      next
+    }
+    if(i == z)
+    {
+      if(max(c(bp.trace.clean$sys.trace[z-1] - bp.trace.clean$sys.trace[z], bp.trace.clean$dias.trace[z-1] - bp.trace.clean$dias.trace[z], 
+               bp.trace.clean$MAP.trace[z] - bp.trace.clean$MAP.trace[z-1])) == bp.trace.clean$sys.trace[z-1] - bp.trace.clean$sys.trace[z])
+      {
+        bp.trace.clean$sys.trace[z] = bp.trace.clean$dias.trace[z] + (bp.trace.clean$MAP.trace[z] - bp.trace.clean$dias.trace[z]) / spacing
+      }
+      if(max(c(bp.trace.clean$sys.trace[z-1] - bp.trace.clean$sys.trace[z], bp.trace.clean$dias.trace[z-1] - bp.trace.clean$dias.trace[z], 
+               bp.trace.clean$MAP.trace[z] - bp.trace.clean$MAP.trace[z-1])) == bp.trace.clean$dias.trace[z-1] - bp.trace.clean$dias.trace[z])
+      {
+        bp.trace.clean$dias.trace[z] = bp.trace.clean$sys.trace[z] - (bp.trace.clean$sys.trace[z] - bp.trace.clean$MAP.trace[z]) / (1 - spacing)
+      }
+      if(max(c(bp.trace.clean$sys.trace[z-1] - bp.trace.clean$sys.trace[z], bp.trace.clean$dias.trace[z-1] - bp.trace.clean$dias.trace[z], 
+               bp.trace.clean$MAP.trace[z] - bp.trace.clean$MAP.trace[z-1])) == bp.trace.clean$MAP.trace[z] - bp.trace.clean$MAP.trace[z-1])
+      {
+        bp.trace.clean$MAP.trace[z] = bp.trace.clean$dias.trace[z] + (bp.trace.clean$sys.trace[z] - bp.trace.clean$dias.trace[z]) * spacing
+      }
+      next
+    }else #if in the middle of trace, identify aberrant trace and use linear interpolation
+    {
+      if(max(c(bp.trace.clean$sys.trace[i-1] - bp.trace.clean$sys.trace[i] + bp.trace.clean$sys.trace[i+1] - bp.trace.clean$sys.trace[i],
+               bp.trace.clean$dias.trace[i-1] - bp.trace.clean$dias.trace[i] + bp.trace.clean$dias.trace[i+1] - bp.trace.clean$dias.trace[i],
+               bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i+1]))
+               == bp.trace.clean$sys.trace[i-1] - bp.trace.clean$sys.trace[i] + bp.trace.clean$sys.trace[i+1] - bp.trace.clean$sys.trace[i])
+      {
+        #bp.trace.clean$sys.trace[i] = (bp.trace.clean$sys.trace[i-1] + bp.trace.clean$sys.trace[i+1]) / 2
+        bp.trace.clean$sys.trace[i] = bp.trace.clean$dias.trace[i] + (bp.trace.clean$MAP.trace[i] - bp.trace.clean$dias.trace[i]) / spacing
+      }
+      if(max(c(bp.trace.clean$sys.trace[i-1] - bp.trace.clean$sys.trace[i] + bp.trace.clean$sys.trace[i+1] - bp.trace.clean$sys.trace[i],
+               bp.trace.clean$dias.trace[i-1] - bp.trace.clean$dias.trace[i] + bp.trace.clean$dias.trace[i+1] - bp.trace.clean$dias.trace[i],
+               bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i+1]))
+         == bp.trace.clean$dias.trace[i-1] - bp.trace.clean$dias.trace[i] + bp.trace.clean$dias.trace[i+1] - bp.trace.clean$dias.trace[i])
+      {
+        #bp.trace.clean$dias.trace[i] = (bp.trace.clean$dias.trace[i-1] + bp.trace.clean$dias.trace[i+1]) / 2
+        bp.trace.clean$dias.trace[i] = bp.trace.clean$sys.trace[i] - (bp.trace.clean$sys.trace[i] - bp.trace.clean$MAP.trace[i]) / (1 - spacing)
+      }
+      if(max(c(bp.trace.clean$sys.trace[i-1] - bp.trace.clean$sys.trace[i] + bp.trace.clean$sys.trace[i+1] - bp.trace.clean$sys.trace[i],
+               bp.trace.clean$dias.trace[i-1] - bp.trace.clean$dias.trace[i] + bp.trace.clean$dias.trace[i+1] - bp.trace.clean$dias.trace[i],
+               bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i+1]))
+         == bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i+1])
+      {
+        #bp.trace.clean$MAP.trace[i] = (bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i+1]) / 2
+        bp.trace.clean$MAP.trace[i] = bp.trace.clean$dias.trace[i] + (bp.trace.clean$sys.trace[i] - bp.trace.clean$dias.trace[i]) * spacing
+      }
+    }
+  }
+  #next fetch instances where MAP.trace is too low, or sys or dias too high
+  index = which(bp.trace.clean$MAP.trace < bp.trace.clean$dias.trace + 2/3 * spacing * (bp.trace.clean$sys.trace - bp.trace.clean$dias.trace))
+  for(i in index)
+  {
+    #if at endpoints, identify which two of systolic, diastolic, MAP are correct and use them to interpolate the third
+    if(i == 1)
+    {
+      if(max(c(bp.trace.clean$sys.trace[1] - bp.trace.clean$sys.trace[2], bp.trace.clean$dias.trace[1] - bp.trace.clean$dias.trace[2], 
+               bp.trace.clean$MAP.trace[2] - bp.trace.clean$MAP.trace[1])) == bp.trace.clean$sys.trace[1] - bp.trace.clean$sys.trace[2])
+      {
+        bp.trace.clean$sys.trace[1] = bp.trace.clean$dias.trace[1] + (bp.trace.clean$MAP.trace[1] - bp.trace.clean$dias.trace[1]) / spacing
+      }
+      if(max(c(bp.trace.clean$sys.trace[1] - bp.trace.clean$sys.trace[2], bp.trace.clean$dias.trace[1] - bp.trace.clean$dias.trace[2], 
+               bp.trace.clean$MAP.trace[2] - bp.trace.clean$MAP.trace[1])) == bp.trace.clean$dias.trace[1] - bp.trace.clean$dias.trace[2])
+      {
+        bp.trace.clean$dias.trace[1] = bp.trace.clean$sys.trace[1] - (bp.trace.clean$sys.trace[1] - bp.trace.clean$MAP.trace[1]) / (1 - spacing)
+      }
+      if(max(c(bp.trace.clean$sys.trace[1] - bp.trace.clean$sys.trace[2], bp.trace.clean$dias.trace[1] - bp.trace.clean$dias.trace[2], 
+               bp.trace.clean$MAP.trace[2] - bp.trace.clean$MAP.trace[1])) == bp.trace.clean$MAP.trace[2] - bp.trace.clean$MAP.trace[1])
+      {
+        bp.trace.clean$MAP.trace[1] = bp.trace.clean$dias.trace[1] + (bp.trace.clean$sys.trace[1] - bp.trace.clean$dias.trace[1]) * spacing
+      }
+      next
+    }
+    if(i == z)
+    {
+      if(max(c(bp.trace.clean$sys.trace[z] - bp.trace.clean$sys.trace[z-1], bp.trace.clean$dias.trace[z] - bp.trace.clean$dias.trace[z-1], 
+               bp.trace.clean$MAP.trace[z-1] - bp.trace.clean$MAP.trace[z])) == bp.trace.clean$sys.trace[z] - bp.trace.clean$sys.trace[z-1])
+      {
+        bp.trace.clean$sys.trace[z] = bp.trace.clean$dias.trace[z] + (bp.trace.clean$MAP.trace[z] - bp.trace.clean$dias.trace[z]) / spacing
+      }
+      if(max(c(bp.trace.clean$sys.trace[z] - bp.trace.clean$sys.trace[z-1], bp.trace.clean$dias.trace[z] - bp.trace.clean$dias.trace[z-1], 
+               bp.trace.clean$MAP.trace[z-1] - bp.trace.clean$MAP.trace[z])) == bp.trace.clean$dias.trace[z] - bp.trace.clean$dias.trace[z-1])
+      {
+        bp.trace.clean$dias.trace[z] = bp.trace.clean$sys.trace[z] - (bp.trace.clean$sys.trace[z] - bp.trace.clean$MAP.trace[z]) / (1 - spacing)
+      }
+      if(max(c(bp.trace.clean$sys.trace[z] - bp.trace.clean$sys.trace[z-1], bp.trace.clean$dias.trace[z] - bp.trace.clean$dias.trace[z-1], 
+               bp.trace.clean$MAP.trace[z-1] - bp.trace.clean$MAP.trace[z])) == bp.trace.clean$MAP.trace[z-1] - bp.trace.clean$MAP.trace[z])
+      {
+        bp.trace.clean$MAP.trace[z] = bp.trace.clean$dias.trace[z] + (bp.trace.clean$sys.trace[z] - bp.trace.clean$dias.trace[z]) * spacing
+      }
+      next
+    }else #if in the middle of trace, identify aberrant trace and use linear interpolation
+    {
+      if(min(c(bp.trace.clean$sys.trace[i-1] - bp.trace.clean$sys.trace[i] + bp.trace.clean$sys.trace[i+1] - bp.trace.clean$sys.trace[i],
+               bp.trace.clean$dias.trace[i-1] - bp.trace.clean$dias.trace[i] + bp.trace.clean$dias.trace[i+1] - bp.trace.clean$dias.trace[i],
+               bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i+1]))
+         == bp.trace.clean$sys.trace[i-1] - bp.trace.clean$sys.trace[i] + bp.trace.clean$sys.trace[i+1] - bp.trace.clean$sys.trace[i])
+      {
+        #bp.trace.clean$sys.trace[i] = (bp.trace.clean$sys.trace[i-1] + bp.trace.clean$sys.trace[i+1]) / 2
+        bp.trace.clean$sys.trace[i] = bp.trace.clean$dias.trace[i] + (bp.trace.clean$MAP.trace[i] - bp.trace.clean$dias.trace[i]) / spacing
+      }
+      if(min(c(bp.trace.clean$sys.trace[i-1] - bp.trace.clean$sys.trace[i] + bp.trace.clean$sys.trace[i+1] - bp.trace.clean$sys.trace[i],
+               bp.trace.clean$dias.trace[i-1] - bp.trace.clean$dias.trace[i] + bp.trace.clean$dias.trace[i+1] - bp.trace.clean$dias.trace[i],
+               bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i+1]))
+         == bp.trace.clean$dias.trace[i-1] - bp.trace.clean$dias.trace[i] + bp.trace.clean$dias.trace[i+1] - bp.trace.clean$dias.trace[i])
+      {
+        #bp.trace.clean$dias.trace[i] = (bp.trace.clean$dias.trace[i-1] + bp.trace.clean$dias.trace[i+1]) / 2
+        bp.trace.clean$dias.trace[i] = bp.trace.clean$sys.trace[i] - (bp.trace.clean$sys.trace[i] - bp.trace.clean$MAP.trace[i]) / (1 - spacing)
+      }
+      if(min(c(bp.trace.clean$sys.trace[i-1] - bp.trace.clean$sys.trace[i] + bp.trace.clean$sys.trace[i+1] - bp.trace.clean$sys.trace[i],
+               bp.trace.clean$dias.trace[i-1] - bp.trace.clean$dias.trace[i] + bp.trace.clean$dias.trace[i+1] - bp.trace.clean$dias.trace[i],
+               bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i+1]))
+         == bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i] - bp.trace.clean$MAP.trace[i+1])
+      {
+        #bp.trace.clean$MAP.trace[i] = (bp.trace.clean$MAP.trace[i-1] + bp.trace.clean$MAP.trace[i+1]) / 2
+        bp.trace.clean$MAP.trace[i] = bp.trace.clean$dias.trace[i] + (bp.trace.clean$sys.trace[i] - bp.trace.clean$dias.trace[i]) * spacing
+      }
+    }
+  }
+  
+  #finally check for improperly tight spacings and interpolate linearly
+  index.sd = (bp.trace.clean$sys.trace - bp.trace.clean$dias.trace) < pmin(bp.trace.clean$sys.trace/5, 15)
+  index.sm = (bp.trace.clean$sys.trace - bp.trace.clean$MAP.trace) < pmin(bp.trace.clean$sys.trace/9, 8)
+  index.md = (bp.trace.clean$MAP.trace - bp.trace.clean$dias.trace) < pmin(bp.trace.clean$MAP.trace/12, 5)
+  
+  bp.trace.clean$sys.trace[index.sd | index.sm] = NA
+  bp.trace.clean$dias.trace[index.sd | index.md] = NA
+  bp.trace.clean$MAP.trace[index.sm | index.md] = NA
+  
+  #fill in missing values from final spacing check with linear interpolation
+  #systolic
+  index = which(is.na(bp.trace.clean$sys.trace))
+  for(i in index)
+  {
+    if((i == 1)|(i == nrow(bp.trace.clean)))
+    {
+      bp.trace.clean = bp.trace.clean[setdiff(1:nrow(bp.trace.clean), i),] 
+      next
+    }
+    
+    j = i+1
+    count = 1
+    while(j %in% index)
+    {
+      index = setdiff(index, j)
+      count = count + 1
+      j = j + 1
+    }
+    bp.trace.clean$sys.trace[i:(i + count - 1)] = rep(bp.trace.clean$sys.trace[i-1], count) + 1:count * 
+      (bp.trace.clean$sys.trace[i + count] - bp.trace.clean$sys.trace[i - 1]) / (count + 1)
+  }
+  #repeat for diastolic
+  index = which(is.na(bp.trace.clean$dias.trace))
+  for(i in index)
+  {
+    if((i == 1)|(i == nrow(bp.trace.clean)))
+    {
+      bp.trace.clean = bp.trace.clean[setdiff(1:nrow(bp.trace.clean), i),] 
+      next
+    }
+    
+    j = i+1
+    count = 1
+    while(j %in% index)
+    {
+      index = setdiff(index, j)
+      count = count + 1
+      j = j + 1
+    }
+    bp.trace.clean$dias.trace[i:(i + count - 1)] = rep(bp.trace.clean$dias.trace[i-1], count) + 1:count * 
+      (bp.trace.clean$dias.trace[i + count] - bp.trace.clean$dias.trace[i - 1]) / (count + 1)
+  }
+  #repeat for MAP
+  index = which(is.na(bp.trace.clean$MAP.trace))
+  for(i in index)
+  {
+    if((i == 1)|(i == nrow(bp.trace.clean)))
+    {
+      bp.trace.clean = bp.trace.clean[setdiff(1:nrow(bp.trace.clean), i),] 
+      next
+    }
+    
+    j = i+1
+    count = 1
+    while(j %in% index)
+    {
+      index = setdiff(index, j)
+      count = count + 1
+      j = j + 1
+    }
+    bp.trace.clean$MAP.trace[i:(i + count - 1)] = rep(bp.trace.clean$MAP.trace[i-1], count) + 1:count * 
+      (bp.trace.clean$MAP.trace[i + count] - bp.trace.clean$MAP.trace[i - 1]) / (count + 1)
+  }
+  
+  
+  return(bp.trace.clean)
+}
+
+
+```
+
+#2) Run Khan et al 'clean.iobp.icu' function using Du et al 'clean.iobp' function
+```{r}
+#include in data: subject_id, DateTime, MAP.trace, sys.trace, dias.trace, minute
+
+clean.iobp.icu <- function(bp.trace, lower_limit, upper_limit, threshold) {
+
+  subject.list <- unique(bp.trace$subject_id)
+  
+  #run through given threshold(s) (1.3 recommended in ICU)
+  for (j in 1:length(threshold)) {
+    
+    print(threshold[j])
+    pt.clean <- list()
+    pt.raw <- list()
+    pt.mins <- NULL
+    
+    #run Du et al., algorithm on each subject
+    for (i in subject.list) {
+    
+      pt.mins[i] <- as.numeric(length(bp.trace$subject_id[bp.trace$subject_id == i]))
+      pt.raw[[i]] = bp.trace[bp.trace$subject_id == i,] 
+      pt.clean[[i]] = clean.iobp(pt.raw[[i]],threshold[j])
+      
+      print(i)
+      
+    }
+  
+    #combine patient data into one data frame
+    pt.clean <- lapply(pt.clean, mutate, cleaned_minute = row_number()-1)
+    algorithm.pt.clean = plyr::ldply(pt.clean)
+    
+    #clean up data to prep for post-hoc edits
+    bp.algorithm <- algorithm.pt.clean %>% 
+      select(c("subject_id", "DateTime", "MAP.trace", "sys.trace","dias.trace", "minute", "cleaned_minute")) %>%
+      rename("MAP.new" = "MAP.trace", 
+             "sys.new" = "sys.trace",
+             "dias.new" = "dias.trace")
+    
+    #post-hoc algorithm edits, removing any values outside physiologic range (<30 and >200mmHg limits recommended for ICU)
+    bp.algorithm <- bp.algorithm %>%
+      filter(MAP.new > lower_limit,
+             MAP.new < upper_limit)
+    
+  }
+
+  return(bp.algorithm)
+}
+```
+
+#3.a) Load data and format:
+```{r}
+bp.original <- fread("base_unpadded.csv", na.strings= c("", "NaN")) 
+bp.original <- bp.original %>% 
+  select(c("subject_id", 
+           "DateTime", 
+           "MAP.trace", 
+           "sys.trace", 
+           "dias.trace"))
+
+bp.no.gaps <- bp.original %>% 
+  filter(!(is.na(MAP.trace) & is.na(sys.trace) & is.na(dias.trace))) %>%
+  select(subject_id, DateTime)
+```
+
+b) Add minute column and insert any missing timestamps
+```{r}
+bp.original.pad <- bp.original %>%
+  group_by(subject_id) %>%
+  pad() %>%
+  dplyr::mutate(minute = row_number()-1) 
+```
+
+4) Run algorithm
+```{r}
+#run algorithm
+bp.algorithm <-  clean.iobp.icu(bp.original.pad, 30, 200, 1.3)
+
+#Remove data breaks to remove inappropriately interpolated data points
+bp.algorithm.final <- inner_join(bp.algorithm, bp.no.gaps, by = c("subject_id", "DateTime"))
+```
+
+5) Plot original and clean bp traces ##FIX GAPS IN TRACE
+```{r}
+subject.list <- unique(bp.original$subject_id)
+
+for (i in subject.list) {
+  
+  og.temp <- filter(bp.original.pad, subject_id == i) 
+  alg.temp <- filter(bp.algorithm.final, subject_id == i) %>% pad() #pad so that ggplot doesn't join data breaks
+  
+  print(ggplot(og.temp, aes(x = minute, y= MAP.trace)) +
+  geom_line(color = "red") +
+  geom_path(data = alg.temp, color = "#0072B2", na.rm = FALSE, aes(x= minute, y = MAP.new)) + 
+  labs(title = i, x= "Time (minutes)", y="MAP (mmHg)") +
+  theme_classic() 
+  )
+  
+  remove(og.temp, alg.temp)
+}
+```
+
