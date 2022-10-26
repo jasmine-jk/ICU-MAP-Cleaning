@@ -10,7 +10,7 @@ editor_options:
 *Table of Contents:*
 
 1) Run Du et al 'clean.iobp' function
-1) Run Khan et al 'clean.iobp' function
+1) Run Khan et al 'clean.iobp.icu' function
 3) Load data + format
 4) Run algorithm + remove gaps
 5) Plot MAP traces
